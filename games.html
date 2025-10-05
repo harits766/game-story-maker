@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Story Maker – 5 Babak (Offline)</title>
+<style>
+  :root{--gap:14px;--muted:#6b7280}
+  body{font-family:system-ui,Segoe UI,Arial;margin:24px;max-width:1000px}
+  h1,h2,h3{margin:.2em 0}
+  .muted{color:var(--muted)}
+  .grid{display:grid;gap:var(--gap)}
+  .row{display:flex;gap:var(--gap);flex-wrap:wrap;align-items:center}
+  .btn{padding:10px 14px;border:1px solid #d1d5db;border-radius:12px;background:#fff;cursor:pointer}
+  .btn.primary{background:#111827;color:#fff;border-color:#111827}
+  .btn[disabled]{opacity:.6;cursor:not-allowed}
+  .card{border:1px solid #e5e7eb;border-radius:14px;padding:16px}
+  .pill{display:inline-block;border:1px solid #e5e7eb;border-radius:999px;padding:4px 10px;font-size:12px}
+  .keywords{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+  .kw{display:flex;align-items:center;gap:8px;border:1px solid #e5e7eb;border-radius:10px;padding:8px}
+  textarea{width:100%;min-height:180px;resize:vertical;border:1px solid #d1d5db;border-radius:10px;padding:12px;font:inherit}
+  .timer{font-weight:700}
+  .ok{color:#047857}.warn{color:#b45309}.bad{color:#b91c1c}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<h1>Selamat datang di <i>Story Maker</i> ✨</h1>
+<p class="muted">Pilih tema, susun cerita 5 babak (Orientasi → Komplikasi → Klimaks → Resolusi → Koda). Di tiap babak, pilih 5 dari 50 kata dan tulis teks yang mengandung kelimanya. Waktu per babak: <b>5 menit</b>.</p>
+
+<!-- STEP 1: tema -->
+<section id="s-theme" class="grid">
+  <h2>Pilih satu tema</h2>
+  <div id="theme-list" class="keywords"></div>
+  <div class="row">
+    <button id="start-btn" class="btn primary" disabled>Mulai → Babak 1</button>
+    <button id="reset-btn" class="btn">Reset</button>
+  </div>
+</section>
+
+<!-- STEP 2: babak -->
+<section id="s-stage" class="grid hidden">
+  <div class="row" style="justify-content:space-between">
+    <div>
+      <h2 id="stage-title">Babak …</h2>
+      <div class="muted">Tema: <b id="theme-name"></b> • Pilih <b>5</b> kata.</div>
+    </div>
+    <div class="pill">Sisa waktu: <span id="timer" class="timer">05:00</span></div>
+  </div>
+
+  <!-- REKAP BABAK SEBELUMNYA -->
+  <div id="prev-card" class="card hidden">
+    <h3>Babak Sebelumnya</h3>
+    <div id="prev-content" style="white-space:pre-wrap;margin:.6em 0 0"></div>
+  </div>
+
+  <div class="card">
+    <h3>50 Kata Rekomendasi</h3>
+    <div id="kw-wrap" class="keywords"></div>
+    <div class="muted" id="kw-selected-info">0/5 kata dipilih</div>
+  </div>
+
+  <div class="card">
+    <h3>Tuliskan Cerita Babak Ini</h3>
+    <textarea id="story-input" placeholder="Tulis ceritamu di sini…"></textarea>
+    <div class="muted" id="hint">Gunakan semua kata yang kamu pilih (case-insensitive). Auto-save aktif.</div>
+  </div>
+
+  <div class="row">
+    <button id="next-stage" class="btn primary">Simpan & Lanjut</button>
+    <button id="pause" class="btn">Pause</button>
+    <button id="clear" class="btn">Kosongkan</button>
+  </div>
+</section>
+
+<!-- STEP 3: hasil -->
+<section id="s-result" class="grid hidden">
+  <h2>Hasil Ceritamu</h2>
+  <div id="story-full" class="card"></div>
+
+  <h3>Penilaian & Rekomendasi (lokal)</h3>
+  <div id="eval" class="card"></div>
+
+  <div class="row">
+    <button class="btn" id="download">Download .txt</button>
+    <button class="btn" id="restart">Mulai Baru</button>
+  </div>
+</section>
+
+<script>
+/* =================== KONST, STATE, UTIL =================== */
+const LIMIT_WORDS = 5;
+const LIMIT_MINUTES = 5;
+const SAVE_KEY = "story-maker-offline";
+
+let chosenTheme = null, stageIndex = 0, deadline = 0, timerId = null;
+const selections = {}; // stageId -> {words, text}
+const $ = s => document.querySelector(s), pad = n => n<10?("0"+n):n;
+
+function show(id){
+  ["s-theme","s-stage","s-result"].forEach(x=>$("#"+x).classList.add("hidden"));
+  $("#"+id).classList.remove("hidden");
+}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]} return a}
+function escapeRegex(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+function saveState(){ localStorage.setItem(SAVE_KEY, JSON.stringify({chosenTheme, stageIndex, selections})); }
+function loadState(){ try{ return JSON.parse(localStorage.getItem(SAVE_KEY)||"null"); }catch{ return null; }}
+
+/* === UI message (ganti alert) === */
+function showMsg(text, type="bad", ttl=3000){
+  const h = document.getElementById("hint"); if(!h) return;
+  h.textContent = text; h.classList.remove("bad","ok","warn"); if(type) h.classList.add(type);
+  if(ttl){ clearTimeout(showMsg._t); showMsg._t=setTimeout(()=>{h.textContent="Gunakan semua kata yang kamu pilih (case-insensitive). Auto-save aktif.";h.classList.remove("bad","ok","warn");}, ttl); }
+}
+
+/* =================== DATA =================== */
+const THEMES = [
+  "Petualangan Laut","Cyberpunk Kota","Fantasi Kerajaan","Misteri Sekolah",
+  "Laga Superhero","Sejarah Nusantara","Drama Keluarga","Eksplorasi Antariksa",
+  "Survival Alam","Detektif Noir","Romansa Kampus","Horor Desa",
+  "Perjalanan Waktu","AI & Robotika","Komedi Absurd"
+];
+const STAGES = [
+  {id:"orientasi",label:"Orientasi"},
+  {id:"komplikasi",label:"Komplikasi"},
+  {id:"klimaks",label:"Klimaks"},
+  {id:"resolusi",label:"Resolusi"},
+  {id:"koda",label:"Koda"}
+];
+const BASE = {
+  "Petualangan Laut":["kapal","kompas","ombak","pelabuhan","peta","nakhoda","terumbu","angin","jangkar","taufan","sirene","perbekalan","mercusuar","pasang"],
+  "Cyberpunk Kota":["neon","dron","kupon-data","gang","augmen","matrix","hacker","megacorp","chip","bionik","glitch","kredit","sensor","lapis-langit"],
+  "Fantasi Kerajaan":["istana","penyihir","naga","pedang","penjaga","tahta","ramuan","hutan","elf","perjanjian","perisai","kuda","benteng","gulungan"],
+  "Misteri Sekolah":["kelas","ujian","absen","lab","catatan","perpustakaan","guru","lorong","kunci","locker","jejak","OSIS","jam-malam","seragam"],
+  "Laga Superhero":["topeng","cape","serum","mutasi","telepati","kilat","markas","sidekick","alarm","kripton","antagonis","satelit","pahlawan","kode"],
+  "Sejarah Nusantara":["pelita","perahu","lada","rempah","balairung","prasasti","jalur","pelayar","purnama","dayung","sunda","majapahit","tikar","katana"],
+  "Drama Keluarga":["dapur","warisan","kontrak","ulangtahun","curhat","mudik","tetangga","tabungan","telepon","album","bunda","adik","konflik","ruangtamu"],
+  "Eksplorasi Antariksa":["kapsul","orbit","stasiun","asteroid","panel","gravitasi","telemetri","vakum","thruster","supernova","dok","komando","modul","terminal"],
+  "Survival Alam":["tenda","sungai","jejak","bivak","kompor","apung","peta","jerat","kabut","bekal","serigala","rawa","lilin","ranting"],
+  "Detektif Noir":["trench","topi","asbak","klub","saksofon","jejak","kode","arsip","loker","kamar","alibi","uyung","pemburu","lampu-jalan"],
+  "Romansa Kampus":["kelas","kopi","deadline","presentasi","asrama","praktikum","teater","perpus","beasiswa","line","kost","bimbel","fest","mentor"],
+  "Horor Desa":["pematang","sumur","kemenyan","gendang","pagar","sendang","kuping","petromaks","anyaman","pohon","lumbung","lesung","magrib","kijing"],
+  "Perjalanan Waktu":["portal","paradoks","kronik","dial","jam-pasir","baling","titik-singular","catatan","anomali","kapsul","arus","titik-acuan","relay","gelombang"],
+  "AI & Robotika":["sensor","aktuator","lengan","dataset","pelatihan","model","chip","debug","antarmuka","protokol","kamera","lidar","loop","firmware"],
+  "Komedi Absurd":["sendal","panci","birokrasi","tangga","ikan","kardus","bel","moped","sandal-jepit","lem","kalkulator","spidol","ember","panci-dua"]
+};
+const STAGE_FLAVORS = {
+  orientasi:["nama","rumah","asal","pagi","peta","tujuan","rencana","langkah","latar","keterangan","cuaca","teman","bekal","catatan","jalan","perkenalan","jam","tempat","waktu","kota"],
+  komplikasi:["benturan","krisis","rintangan","tersesat","salah","bocor","gangguan","kehilangan","terlambat","bahaya","ancaman","curiga","jejak","retak","perdebatan","miskom","panik","kesalahan","patah","misteri"],
+  klimaks:["kejar","pecah","puncak","terungkap","melawan","melompat","jatuh","terseret","ledak","membeku","menantang","teriak","mengejar","memutuskan","berkorban","rapuh","membuka","bertabrakan","gemetar","hampir"],
+  resolusi:["tenang","berdamai","memperbaiki","menemukan","menolong","mengaku","mengikat","meminta","menutup","berhasil","menyala","menautkan","mengantar","mengirim","mengunci","memegang","menghidupkan","damai","sembuh","beres"],
+  koda:["pelajaran","catatan","masa-depan","janji","doa","mengingat","tertawa","mengarsip","pamit","terima-kasih","menyapa","surat","purnama","kembali","meninggalkan","berkumpul","merekam","menulis","kesimpulan","penutup"]
+};
+
+/* =================== KATA & TIMER =================== */
+function wordsFor(theme, stageId){
+  const base=(BASE[theme]||[]).slice(), flav=(STAGE_FLAVORS[stageId]||[]).slice(), bag=[...base,...flav];
+  const more=[]; const aff=stageId==="orientasi"?["awal","pertama","dasar"]:stageId==="komplikasi"?["retak","gagal","buntu"]:stageId==="klimaks"?["puncak","gesit","tegang"]:stageId==="resolusi"?["rukun","usai","tuntas"]:["catat","ingat","esok"];
+  let i=0; while(bag.length+more.length<50){ const seed=(base[i%base.length]||"tema"); more.push(`${seed}-${aff[i%aff.length]}`); i++; if(i>160) break; }
+  return shuffle([...bag,...more]).slice(0,50);
+}
+function startTimer(mins){
+  if (timerId) clearInterval(timerId);
+  deadline = Date.now() + mins*60*1000;
+  tick(); timerId = setInterval(tick, 250);
+  function tick(){
+    const left = Math.max(0, Math.ceil((deadline - Date.now())/1000));
+    $("#timer").textContent = `${pad(Math.floor(left/60))}:${pad(left%60)}`;
+    if (left <= 0) { clearInterval(timerId); timerId = null; finalizeStage(true); }
+  }
+}
+
+/* =================== THEME UI =================== */
+const themeList = $("#theme-list"), startBtn = $("#start-btn");
+THEMES.forEach((t,i)=>{
+  const div=document.createElement("label"); div.className="kw"; div.style.cursor="pointer";
+  div.innerHTML=`<input type="radio" name="theme" value="${i}"> <span>${t}</span>`;
+  div.addEventListener("change",()=>{ chosenTheme=THEMES[i]; startBtn.disabled=false; });
+  themeList.appendChild(div);
+});
+document.getElementById('reset-btn').onclick = hardReset;
+startBtn.onclick=()=>{ stageIndex=0; showStage(); show("s-stage"); saveState(); };
+
+/* =================== STAGE UI =================== */
+function showStage(){
+  const stage=STAGES[stageIndex];
+  $("#theme-name").textContent=chosenTheme;
+  $("#stage-title").textContent=`Babak ${stageIndex+1}: ${stage.label}`;
+
+  // Rekap babak sebelumnya
+  if (stageIndex > 0) {
+    $("#prev-card").classList.remove("hidden");
+    let html = "";
+    for (let i = 0; i < stageIndex; i++) {
+      const prev = STAGES[i];
+      const sec = selections[prev.id];
+      if (sec && sec.text?.trim()) {
+        html += `<b>Babak ${i + 1}: ${prev.label}</b><br>
+                 <span class="muted">${(sec.words || []).join(" • ")}</span>
+                 <p style="margin:.4em 0 1em">${sec.text}</p>`;
+      }
+    }
+    $("#prev-content").innerHTML = html;
+  } else {
+    $("#prev-card").classList.add("hidden");
+    $("#prev-content").innerHTML = "";
+  }
+
+  // 50 kata
+  const words=wordsFor(chosenTheme, stage.id);
+  const kwWrap=$("#kw-wrap"); kwWrap.innerHTML="";
+  const chosen=new Set((selections[stage.id]?.words)||[]);
+  words.forEach(w=>{
+    const label=document.createElement("label"); label.className="kw";
+    const checked = chosen.has(w) ? "checked" : "";
+    label.innerHTML=`<input type="checkbox" ${checked}> <span>${w}</span>`;
+    const box=label.querySelector("input");
+    box.addEventListener("change",()=>{
+      if(box.checked){
+        if(chosen.size>=LIMIT_WORDS){
+          box.checked=false; showMsg(`Maksimal ${LIMIT_WORDS} kata.`,`bad`); return;
+        }
+        chosen.add(w);
+      } else { chosen.delete(w); }
+      $("#kw-selected-info").textContent=`${chosen.size}/${LIMIT_WORDS} kata dipilih`;
+      selections[stage.id]={...(selections[stage.id]||{}),words:[...chosen]}; saveState();
+    });
+    kwWrap.appendChild(label);
+  });
+  $("#kw-selected-info").textContent=`${chosen.size}/${LIMIT_WORDS} kata dipilih`;
+
+  // input cerita
+  const input = $("#story-input");
+  input.value = selections[stage.id]?.text || "";
+  input.oninput = () => { selections[stage.id] = { ...(selections[stage.id]||{}), text: input.value }; saveState(); };
+
+  // tombol
+  $("#next-stage").onclick = () => finalizeStage(false);
+  $("#pause").onclick=()=>{ if(timerId){clearInterval(timerId);timerId=null; $("#pause").textContent="Resume";} else {startTimer(LIMIT_MINUTES); $("#pause").textContent="Pause";}};
+  $("#clear").onclick=()=>{ input.value=""; selections[stage.id]={...(selections[stage.id]||{}), text:""}; saveState(); };
+
+  // timer
+  startTimer(LIMIT_MINUTES);
+}
+
+/* === Simpan & lanjut (validasi/auto) === */
+function finalizeStage(force=false){
+  const stage = STAGES[stageIndex];
+  const input = $("#story-input");
+  let text = (input.value || "").trim();
+  let words = [...document.querySelectorAll('#kw-wrap input[type=checkbox]:checked')].map(b=>b.nextElementSibling.textContent);
+
+  if (!force) {
+    if (words.length !== LIMIT_WORDS) { showMsg(`Pilih tepat ${LIMIT_WORDS} kata. Kamu baru pilih ${words.length}.`, "bad"); return false; }
+    const miss = words.filter(k => !new RegExp("\\b"+escapeRegex(k)+"\\b","i").test(text));
+    if (miss.length) { showMsg(`Teks belum memuat: ${miss.join(", ")}`, "bad"); return false; }
+  } else {
+    if (words.length < LIMIT_WORDS) {
+      const all = [...document.querySelectorAll('#kw-wrap .kw span')].map(s=>s.textContent);
+      const remaining = all.filter(w => !words.includes(w)); shuffle(remaining);
+      words = words.concat(remaining.slice(0, LIMIT_WORDS - words.length));
+    }
+    const missing = words.filter(k => !new RegExp("\\b"+escapeRegex(k)+"\\b","i").test(text));
+    if (missing.length) text = (text ? text + " " : "") + missing.join(" ");
+    showMsg("Waktu habis — babak disimpan otomatis.", "ok", 2000);
+  }
+
+  selections[stage.id] = { words, text }; saveState();
+
+  if (stageIndex < STAGES.length - 1) { stageIndex++; showStage(); }
+  else { finishStory(); }
+  return true;
+}
+
+/* =================== FINISH & EVAL =================== */
+function finishStory(){
+  if(timerId){clearInterval(timerId); timerId=null;}
+  // narasi utuh
+  const storyFull = $("#story-full"); let fullText = "";
+  STAGES.forEach(st => { const sec = selections[st.id]; if (sec && sec.text?.trim()) fullText += sec.text.trim() + " "; });
+  storyFull.innerHTML = `<div style="white-space:pre-wrap">${fullText.trim()}</div>`;
+
+  const evalRes = evaluateStory(); $("#eval").innerHTML = evalRes.html;
+  $("#download").onclick=()=>downloadTxt(renderPlain());
+  $("#restart").onclick = hardReset;
+  show("s-result");
+}
+
+/* =================== PENILAIAN HEURISTIK =================== */
+function evaluateStory(){
+  const texts = STAGES.map(s=>(selections[s.id]?.text)||"");
+  const full = texts.join("\n");
+  const totalWords = full.split(/\s+/).filter(Boolean).length;
+  const lens = texts.map(t=>t.split(/\s+/).filter(Boolean).length);
+  const minL = Math.min(...lens), maxL = Math.max(1, Math.max(...lens));
+  const balance = minL/maxL;
+  let missing = [];
+  for(const s of STAGES){
+    const need = (selections[s.id]?.words)||[];
+    const miss = need.filter(k=>!new RegExp("\\b"+escapeRegex(k)+"\\b","i").test((selections[s.id]?.text)||""));
+    if(miss.length) missing.push(`${s.label}: ${miss.join(", ")}`);
+  }
+  const repeat = repetitionScore(full);
+  const avgSent = averageSentenceLength(full);
+  const coverageOk = missing.length===0;
+
+  const recs = pickRecs({totalWords,balance,repeat,avgSent,coverageOk});
+  const grade = (coverageOk?30:10) + Math.max(0, 20*Math.min(balance,1))
+              + (repeat<0.12?20:5) + (avgSent<24?20:10) + (totalWords>800?10:0);
+  const band = grade>=85?"ok":grade>=65?"warn":"bad";
+
+  const html = `
+    <div class="grid">
+      <div>Skor keseluruhan: <b class="${band}">${Math.round(grade)}/100</b> <span class="muted">(heuristik lokal)</span></div>
+      <div>Total kata: <b>${totalWords}</b> • Keseimbangan babak: <b>${balance.toFixed(2)}</b> • Repetisi: <b>${repeat.toFixed(3)}</b> • Rata-rata kata/kalimat: <b>${avgSent.toFixed(1)}</b></div>
+      <div>Keterpakaian kata wajib: ${coverageOk?'<b class="ok">OK</b>':('<b class="bad">Kurang</b>')} ${coverageOk?'':('<br><span class="muted">Kurang: '+missing.join(" | ")+'</span>')}</div>
+      <h4>Rekomendasi berikutnya</h4>
+      <ul>${recs.map(r=>`<li>${r}</li>`).join("")}</ul>
+      <p class="muted">Catatan: penilaian ini berbasis heuristic lokal (tanpa AI).</p>
+    </div>`;
+  return {html, grade};
+}
+function repetitionScore(text){
+  const words = text.toLowerCase().replace(/[^a-z0-9\- ]/g,' ').split(/\s+/).filter(w=>w && w.length>3);
+  const freq = new Map(); words.forEach(w=>freq.set(w,(freq.get(w)||0)+1));
+  const n=words.length; if(!n) return 0;
+  const top = [...freq.values()].sort((a,b)=>b-a).slice(0,10).reduce((s,v)=>s+v,0);
+  return top/n;
+}
+function averageSentenceLength(text){
+  const sents = text.split(/[.!?]+/).map(s=>s.trim()).filter(Boolean);
+  if(!sents.length) return 0;
+  const words = sents.map(s=>s.split(/\s+/).filter(Boolean).length);
+  return words.reduce((a,b)=>a+b,0)/sents.length;
+}
+function pickRecs({totalWords,balance,repeat,avgSent,coverageOk}){
+  const base = [
+    "Susun menjadi carousel: 1 slide per babak, judul kuat dan 2–3 kalimat ringkas.",
+    "Pertimbangkan publikasi di Medium/Blog dengan ilustrasi babak.",
+    "Tambah sensory detail (lihat, dengar, cium, rasa) agar imersif.",
+    "Periksa ejaan dan tanda baca agar ritme halus.",
+    "Jika ide brilian, gabungkan riset & jadikan esai/cerpen untuk lomba."
+  ];
+  if(totalWords<500) base.push("Perpanjang narasi hingga ±700–1200 kata untuk versi blog/Medium.");
+  if(balance<0.5) base.push("Samakan panjang antar babak agar ritme cerita konsisten.");
+  if(repeat>0.12) base.push("Kurangi repetisi kata yang sama, pakai sinonim dan variasi struktur.");
+  if(avgSent>24) base.push("Pecah kalimat yang terlalu panjang menjadi 2–3 kalimat pendek.");
+  if(!coverageOk) base.push("Pastikan kata wajib benar-benar muncul di setiap babak.");
+  return [...new Set(base)].slice(0,8);
+}
+
+/* =================== DOWNLOAD & RESET =================== */
+function renderPlain(){
+  let out=`Tema: ${chosenTheme}\n\n`;
+  STAGES.forEach((st,i)=>{
+    const sec=selections[st.id]||{words:[],text:""};
+    out += `Babak ${i+1}: ${st.label}\nKata wajib: ${sec.words.join(", ")}\n\n${sec.text}\n\n`;
+  });
+  return out;
+}
+function downloadTxt(text){
+  const blob=new Blob([text],{type:"text/plain"}), url=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=url; a.download="story-maker.txt"; a.click();
+  URL.revokeObjectURL(url);
+}
+function hardReset(){
+  if (timerId) { clearInterval(timerId); timerId = null; }
+  localStorage.removeItem(SAVE_KEY);
+  for (const k in selections) delete selections[k];
+  chosenTheme = null; stageIndex = 0;
+
+  document.querySelectorAll('input[name="theme"]').forEach(r => r.checked = false);
+  $("#start-btn").disabled = true;
+  $("#kw-wrap").innerHTML = ""; $("#kw-selected-info").textContent = "0/5 kata dipilih";
+  $("#story-input").value = ""; $("#prev-card").classList.add("hidden"); $("#prev-content").innerHTML = "";
+  $("#timer").textContent = "05:00"; $("#story-full").innerHTML = ""; $("#eval").innerHTML = "";
+  show("s-theme");
+}
+
+/* =================== INIT (restore jika ada) =================== */
+const saved = loadState();
+if(saved){
+  Object.assign(selections, saved.selections||{});
+  if(saved.chosenTheme){
+    chosenTheme = saved.chosenTheme;
+    const idx = THEMES.indexOf(chosenTheme);
+    if(idx>=0){
+      const input = document.querySelector(`input[name="theme"][value="${idx}"]`);
+      if(input){ input.checked = true; }
+    }
+    startBtn.disabled = false;
+  }
+}
+document.getElementById("restart").onclick = hardReset;
+document.getElementById("download").onclick = ()=>downloadTxt(renderPlain());
+</script>
+</body>
+</html>
